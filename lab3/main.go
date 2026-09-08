@@ -34,20 +34,16 @@ func reverse() {
 func array_of_5() []int {
 	fmt.Println("Задание 4.")
 
-	nums := [5]int{}
+	const LEN int = 5
+	var nums [LEN]int
 
-	fmt.Print("Введите 5 чисел для массива (через пробел): ")
-	n, err := fmt.Scanln(
-		&nums[0],
-		&nums[1],
-		&nums[2],
-		&nums[3],
-		&nums[4],
-	)
+	fmt.Print()
+	nums_read := utils.ReadInts(fmt.Sprintf("Введите %d чисел для массива (через пробел): ", LEN))
 
-	if n != 5 {
-		panic(fmt.Sprintf("неверный ввод: %v", err))
+	if len(nums_read) != LEN {
+		panic("Неверное количество чисел")
 	}
+	copy(nums[:], nums_read)
 
 	fmt.Println("Массив:", nums)
 
