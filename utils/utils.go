@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 )
 
 // Считывает строку со стандартного ввода до символа новой строки (символ новой
@@ -34,6 +36,27 @@ func ReadSingleInt(prompt string) int {
 	n, err := fmt.Scanln(&res)
 	if n != 1 {
 		panic(fmt.Sprintf("не удалось прочитать целое число: %v", err))
+	}
+
+	return res
+}
+
+// Считывает любое количество целых чисел разделённых пробелом из стандартного ввода.
+//
+// Останавливается на первом некорректном символе или символе новой строки.
+//
+// Паникует при внутренних ошибках ввода.
+func ReadInts(prompt string) []int {
+	s := ReadLine(prompt)
+	items := strings.Fields(s)
+	res := make([]int, 0, len(items))
+	for _, v := range items {
+		num, err := strconv.Atoi(v)
+		if err != nil {
+			break
+		}
+
+		res = append(res, num)
 	}
 
 	return res
