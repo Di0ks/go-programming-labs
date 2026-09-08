@@ -1,36 +1,19 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
-	"os"
 	"slices"
 
 	"github.com/Di0ks/go-programming-labs/lab3/mathutils"
 	"github.com/Di0ks/go-programming-labs/lab3/stringutils"
+	"github.com/Di0ks/go-programming-labs/utils"
 )
-
-// Считывает строку со стандартного ввода до символа новой строки (символ новой
-// строки не сохраняется)
-func read_string() string {
-	// нужен такой способ вместо обычного fmt.Scanln чтобы прочитать строку с пробелами
-	reader := bufio.NewReader(os.Stdin)
-	s, err := reader.ReadString('\n')
-	if err != nil {
-		panic(fmt.Sprintf("не удалось прочитать строку: %v", err))
-	}
-	// избавляемся от символа новой строки
-	s = s[:len(s)-1]
-	return s
-}
 
 // 1. и 2. Вычисления факториала числа через функцию пакета
 func factorial() {
 	fmt.Println("Задания 1. и 2.")
 
-	var num int
-	fmt.Print("Введите число для расчёта факториала: ")
-	fmt.Scanln(&num)
+	num := utils.ReadSingleInt("Введите число для расчёта факториала: ")
 
 	fmt.Printf("%d! = %d\n", num, mathutils.Factorial(num))
 
@@ -41,9 +24,7 @@ func factorial() {
 func reverse() {
 	fmt.Println("Задание 3.")
 
-	fmt.Print("Строка для разворота\n>> ")
-
-	s := read_string()
+	s := utils.ReadLine("Строка для разворота\n>> ")
 	fmt.Println(stringutils.Reverse(s))
 
 	fmt.Println()
@@ -81,33 +62,18 @@ func modify_slice(s []int) {
 
 	// добавление
 	len := len(s)
-	fmt.Printf("Введите индекс для добавления элемента в срез (максимум %d): ", len)
-	var insert_i int
-	n, err := fmt.Scanln(&insert_i)
-	if n != 1 {
-		panic(fmt.Sprintf("неверный ввод: %v", err))
-	}
+	insert_i := utils.ReadSingleInt(fmt.Sprintf("Введите индекс для добавления элемента в срез (максимум %d): ", len))
 	if insert_i > len {
 		panic(fmt.Sprintf("Индекс должен быть меньше длины либо равен ей (%d)", len))
 	}
-	fmt.Print("Какой элемент добавить (введите значение): ")
-	var val int
-	n, err = fmt.Scanln(&val)
-	if n != 1 {
-		panic(fmt.Sprintf("неверный ввод: %v", err))
-	}
+	val := utils.ReadSingleInt("Какой элемент добавить (введите значение): ")
 
 	s = slices.Insert(s, insert_i, val)
 	len++
 	fmt.Println("Добавление выполнено успешно:", s)
 
 	// удаление
-	fmt.Printf("Выберите индекс для удаления элемента из среза (максимум %d): ", len-1)
-	var remove_i int
-	n, err = fmt.Scanln(&remove_i)
-	if n != 1 {
-		panic(fmt.Sprintf("неверный ввод: %v", err))
-	}
+	remove_i := utils.ReadSingleInt(fmt.Sprintf("Выберите индекс для удаления элемента из среза (максимум %d): ", len-1))
 	if remove_i >= len {
 		panic(fmt.Sprintf("Индекс должен быть строго меньше длины (%d)", len))
 	}
@@ -121,12 +87,7 @@ func modify_slice(s []int) {
 func longest_string() {
 	fmt.Println("Задание 6.")
 
-	fmt.Printf("Сколько строк создать для сравнения: ")
-	var length int
-	n, err := fmt.Scanln(&length)
-	if n != 1 {
-		panic(fmt.Sprintf("неверный ввод: %v", err))
-	}
+	length := utils.ReadSingleInt("Сколько строк создать для сравнения: ")
 	if length <= 0 {
 		panic("Количество строк должно быть положительное")
 	}
@@ -134,8 +95,7 @@ func longest_string() {
 	strings := make([]string, length)
 	fmt.Println("Вводите строки поочерёдно")
 	for i := range strings {
-		fmt.Printf("#%d>> ", i)
-		strings[i] = read_string()
+		strings[i] = utils.ReadLine(fmt.Sprintf("#%d>> ", i))
 	}
 
 	max_len := 0
