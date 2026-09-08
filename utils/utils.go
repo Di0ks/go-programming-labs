@@ -61,3 +61,20 @@ func ReadInts(prompt string) []int {
 
 	return res
 }
+
+// Считывает одно число с плавающей запятой со стандартного ввода (до символа новой строки).
+//
+// Позволяет выбрать между `float32` или `float64`
+//
+// Вызывает панику если ввод не является числом или из-за внутренней ошибки.
+func ReadSingleFloat[T float32 | float64](prompt string) T {
+	fmt.Print(prompt)
+
+	var res T
+	n, err := fmt.Scanln(&res)
+	if n != 1 {
+		panic(fmt.Sprintf("не удалось прочитать число с плавающей запятой: %v", err))
+	}
+
+	return res
+}
