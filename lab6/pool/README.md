@@ -23,6 +23,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/binary"
+	"github.com/Di0ks/go-programming-labs/lab6/pool"
 )
 
 func main() {
