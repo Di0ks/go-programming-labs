@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Чат</title>
+<style>
+  body { font-family: sans-serif; max-width: 640px; margin: 1rem auto; }
+  #log { white-space: pre-wrap; border: 1px solid #ccc; padding: 0.5rem;
+         height: 300px; overflow-y: auto; }
+  form { display: flex; gap: 0.5rem; margin-top: 0.5rem; }
+  input[name=name] { width: 8rem; }
+</style>
+</head>
+<body>
+<div id="log"></div>
+<form id="join" action="#">
+  <button>Подключиться</button>
+</form>
+<form id="send" action="#" hidden>
+  <input name="msg" placeholder="сообщение" autocomplete="off" autofocus>
+  <button>Отправить</button>
+</form>
+<script>
+  let ws;
+  const log = document.getElementById('log');
+  function append(text) {
+    const line = document.createElement('div');
+    line.textContent = text;
+    log.append(line);
+    log.scrollTop = log.scrollHeight;
+  }
+  document.getElementById('join').onsubmit = (e) => {
+    document.getElementById('join').children[0].hidden = true
+    e.preventDefault();
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    ws = new WebSocket(proto + '//' + location.host + '/wschat');
+    document.getElementById('send').hidden = false;
+    e.target.hidden = true;
+    ws.onmessage = (ev) => append(ev.data);
+    ws.onclose = () => append('— соединение закрыто —');
+    ws.onerror = () => append('— ошибка соединения —');
+  };
+  document.getElementById('send').onsubmit = (e) => {
+    e.preventDefault();
+    const msg = e.target.msg.value;
+    if (msg && ws && ws.readyState === WebSocket.OPEN) ws.send(msg);
+    e.target.msg.value = '';
+  };
+</script>
+</body>
+</html>
