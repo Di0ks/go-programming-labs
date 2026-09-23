@@ -37,17 +37,17 @@ func even_odd() {
 }
 
 // 2. Положительное, отрицательное или ноль
-func sign_of_number(num int) {
+func sign_of_number(num int) string {
 	s := ""
 	if num < 0 {
-		s = "отрицательное"
+		s = "Negative"
 	} else if num > 0 {
-		s = "положительное"
+		s = "Positive"
 	} else {
-		s = "это ноль"
+		s = "Zero"
 	}
 
-	fmt.Println("Число", num, s)
+	return s
 }
 
 // 3. От 1 до 10 с помощью for
@@ -111,7 +111,8 @@ func main() {
 
 	fmt.Println("Задание 2.")
 	num := read_single_int("Введите одно целое число: ")
-	sign_of_number(num)
+	sign := sign_of_number(num)
+	fmt.Printf("Число %d: %s\n", num, sign)
 	fmt.Println()
 
 	count_to_10()
