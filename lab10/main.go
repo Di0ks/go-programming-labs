@@ -13,11 +13,15 @@ import (
 	"encoding/pem"
 	"fmt"
 	"hash"
+	"log"
 	"os"
 	"slices"
 	"strconv"
 	"strings"
 
+	"github.com/Di0ks/go-programming-labs/lab10/restapi"
+	"github.com/Di0ks/go-programming-labs/lab10/tcptls"
+	tcptlsclient "github.com/Di0ks/go-programming-labs/lab10/tcptls-client"
 	"github.com/Di0ks/go-programming-labs/utils"
 )
 
@@ -178,7 +182,7 @@ outer:
 func assym_enc() {
 	msgid := 0
 	saved_base := "rsa"
-	fmt.Println("Ассиметричное шифрование RSA\nhelp для вывод доступных команд")
+	fmt.Println("Асимметричное шифрование RSA\nhelp для вывод доступных команд")
 outer:
 	for {
 		input := strings.TrimSpace(utils.ReadLine(fmt.Sprintf("\n%s>> ", saved_base)))
@@ -188,7 +192,7 @@ outer:
 		args := strings.Fields(input)
 		switch args[0] {
 		case "help":
-			fmt.Println(`Ассиметричное шифрование RSA
+			fmt.Println(`Асимметричное шифрование RSA
 Доступные команды:
     exit - завершение работы
     help - показывает это сообщение
@@ -358,15 +362,30 @@ outer:
 }
 
 func tcp_tls() {
-	println("todo")
+	ans := utils.ReadSingleInt("Запустить сервер или клиент?\n1. Сервер\n2. Клиент\n>> ")
+	switch ans {
+	case 1:
+		addr := utils.ReadLine("Адрес для сервера, включая IP и порт (например 127.0.0.1:8080): ")
+		tcptls.StartServer(addr, "certs/certificate.pem", "certs/privatekey.pem")
+	case 2:
+		addr := utils.ReadLine("Адрес для подключения, включая IP и порт (например 127.0.0.1:8080): ")
+		tcptlsclient.RunClient(addr, "certs/certificate.pem", "certs/privatekey.pem")
+	}
+}
+
+func restapi_with_auth() {
+	cfg := restapi.NewDbConfig()
+	restapi.RunApi("127.0.0.1", 8080, &cfg)
 }
 
 func main() {
+	log.SetFlags(log.Lmicroseconds | log.Lshortfile)
+
 	fmt.Println(`1 -> хэширование
 2 -> симметричное шифрование
-3 -> ассиметричное шифрование
+3 -> асимметричное шифрование
 4 -> TCP TLS
-5 -> TLS REST API`)
+5 -> REST API с аутентификацией`)
 	choice := utils.ReadSingleInt("Выбор:\n> ")
 	switch choice {
 	case 1:
@@ -378,7 +397,7 @@ func main() {
 	case 4:
 		tcp_tls()
 	case 5:
-		println("todo")
+		restapi_with_auth()
 	default:
 		fmt.Println("Неверный выбор")
 	}

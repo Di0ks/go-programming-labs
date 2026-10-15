@@ -21,3 +21,14 @@ ALTER TABLE users
   ALTER COLUMN id SET DEFAULT nextval('users_id_seq');
 
 ALTER SEQUENCE users_id_seq OWNED BY users.id;
+
+CREATE TABLE IF NOT EXISTS sessions (
+  session_id_hash TEXT PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  csrf_token TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  expires_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS sessions_user_id_idx ON sessions(user_id);
+CREATE INDEX IF NOT EXISTS sessions_expires_at_idx ON sessions(expires_at);

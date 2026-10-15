@@ -4,23 +4,26 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
 	_ "embed"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"mime"
 	"net"
 	"net/http"
 	"net/mail"
 	"net/url"
-	"os"
 	"runtime"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Di0ks/go-programming-labs/lab7/httpserv"
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
@@ -46,75 +49,138 @@ type database interface {
 var db database
 var dbcfg *DbConfig
 
-type authPrincipal struct {
-	UserID int
-	Role   string
-}
+const (
+	sessionCookieName = "session_id"
+	sessionLifetime   = 24 * time.Hour
+)
 
-type userClaims struct {
-	UserID int    `json:"uid"`
-	Role   string `json:"role"`
-	jwt.RegisteredClaims
+type authPrincipal struct {
+	UserID        int
+	Role          string
+	SessionIDHash string
+	CSRFToken     string
 }
 
 type principalContextKey struct{}
 
-var jwtSigningKey = makeJWTSigningKey()
-
-func makeJWTSigningKey() []byte {
-	if secret := os.Getenv("JWT_SECRET"); secret != "" {
-		return []byte(secret)
+func randomToken() (string, error) {
+	value := make([]byte, 32)
+	if _, err := rand.Read(value); err != nil {
+		return "", err
 	}
-	key := make([]byte, 32)
-	if _, err := rand.Read(key); err != nil {
-		panic(err)
-	}
-	return key
+	return base64.RawURLEncoding.EncodeToString(value), nil
 }
 
-func issueToken(userID int, role string) (string, error) {
-	claims := userClaims{
-		UserID: userID,
-		Role:   role,
-		RegisteredClaims: jwt.RegisteredClaims{
-			Subject:   strconv.Itoa(userID),
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-		},
-	}
-	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(jwtSigningKey)
+func hashSessionID(sessionID string) string {
+	hash := sha256.Sum256([]byte(sessionID))
+	return hex.EncodeToString(hash[:])
 }
 
-func authenticate(requireAdmin bool, next http.HandlerFunc) http.HandlerFunc {
+func setSessionCookie(w http.ResponseWriter, r *http.Request, sessionID string, expiresAt time.Time) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    sessionID,
+		Path:     "/",
+		Expires:  expiresAt,
+		MaxAge:   int(time.Until(expiresAt).Seconds()),
+		HttpOnly: true,
+		Secure:   r.TLS != nil,
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+func clearSessionCookie(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   r.TLS != nil,
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+func createSession(w http.ResponseWriter, r *http.Request, userID int) bool {
+	if !executeQuery(w, r, "clean expired sessions", "DELETE FROM sessions WHERE expires_at <= NOW()", nil, nil) {
+		return false
+	}
+	sessionID, err := randomToken()
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "Не удалось создать сессию", "")
+		return false
+	}
+	csrfToken, err := randomToken()
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "Не удалось создать CSRF-токен", "")
+		return false
+	}
+	expiresAt := time.Now().Add(sessionLifetime)
+	query := "INSERT INTO sessions (session_id_hash, user_id, csrf_token, expires_at) VALUES ($1, $2, $3, $4) RETURNING session_id_hash"
+	if !executeQuery(w, r, "create session", query, []any{hashSessionID(sessionID), userID, csrfToken, expiresAt}, func(rows pgx.Rows) error {
+		if !rows.Next() {
+			return fmt.Errorf("session insert returned no result")
+		}
+		var insertedHash string
+		return rows.Scan(&insertedHash)
+	}) {
+		return false
+	}
+	setSessionCookie(w, r, sessionID, expiresAt)
+	return true
+}
+
+func authenticate(requireAdmin, requireCSRF bool, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		parts := strings.Fields(r.Header.Get("Authorization"))
-		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
-			writeAPIError(w, http.StatusUnauthorized, "Требуется JWT-токен", "")
+		cookie, err := r.Cookie(sessionCookieName)
+		if err != nil || cookie.Value == "" {
+			writeAPIError(w, http.StatusUnauthorized, "Требуется сессия", "")
 			return
 		}
 
-		claims := &userClaims{}
-		token, err := jwt.ParseWithClaims(parts[1], claims, func(token *jwt.Token) (any, error) {
-			if token.Method != jwt.SigningMethodHS256 {
-				return nil, fmt.Errorf("неподдерживаемый алгоритм подписи")
+		principal := authPrincipal{SessionIDHash: hashSessionID(cookie.Value)}
+		found := false
+		query := "SELECT s.user_id, u.role, s.csrf_token FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.session_id_hash = $1 AND s.expires_at > NOW()"
+		if !executeQuery(w, r, "authenticate session", query, []any{principal.SessionIDHash}, func(rows pgx.Rows) error {
+			if !rows.Next() {
+				return nil
 			}
-			return jwtSigningKey, nil
-		}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}), jwt.WithExpirationRequired())
-		if err != nil || !token.Valid || claims.UserID <= 0 || (claims.Role != "user" && claims.Role != "admin") {
-			writeAPIError(w, http.StatusUnauthorized, "Недействительный или просроченный JWT-токен", "")
+			found = true
+			return rows.Scan(&principal.UserID, &principal.Role, &principal.CSRFToken)
+		}) {
 			return
 		}
-		if requireAdmin && claims.Role != "admin" {
+		if !found {
+			clearSessionCookie(w, r)
+			writeAPIError(w, http.StatusUnauthorized, "Сессия недействительна или истекла", "")
+			return
+		}
+		if requireAdmin && principal.Role != "admin" {
 			writeAPIError(w, http.StatusForbidden, "Недостаточно прав", "")
 			return
 		}
+		if requireCSRF && subtle.ConstantTimeCompare([]byte(principal.CSRFToken), []byte(r.Header.Get("X-CSRF-Token"))) != 1 {
+			writeAPIError(w, http.StatusForbidden, "Недействительный или отсутствующий CSRF-токен", "")
+			return
+		}
 
-		principal := authPrincipal{UserID: claims.UserID, Role: claims.Role}
 		next(w, r.WithContext(context.WithValue(r.Context(), principalContextKey{}, principal)))
 	}
 }
 
+func requireJSONBody(w http.ResponseWriter, r *http.Request) bool {
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		writeAPIError(w, http.StatusUnsupportedMediaType, "Ожидается Content-Type: application/json", "")
+		return false
+	}
+	return true
+}
+
 func post_register(w http.ResponseWriter, r *http.Request) {
+	if !requireJSONBody(w, r) {
+		return
+	}
 	var input struct {
 		Name     string  `json:"name"`
 		Age      *int    `json:"age"`
@@ -162,17 +228,18 @@ func post_register(w http.ResponseWriter, r *http.Request) {
 	}) {
 		return
 	}
-	token, err := issueToken(userID, "user")
-	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "Не удалось создать токен", "")
+	if !createSession(w, r, userID) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(map[string]string{"token": token, "role": "user"})
+	_ = json.NewEncoder(w).Encode(map[string]string{"role": "user"})
 }
 
 func post_login(w http.ResponseWriter, r *http.Request) {
+	if !requireJSONBody(w, r) {
+		return
+	}
 	var input struct {
 		Email    string `json:"email"`
 		Password string `json:"password"`
@@ -204,13 +271,32 @@ func post_login(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusUnauthorized, "Неверный email или пароль", "")
 		return
 	}
-	token, err := issueToken(userID, role)
-	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "Не удалось создать токен", "")
+	if cookie, err := r.Cookie(sessionCookieName); err == nil {
+		if !executeQuery(w, r, "rotate session", "DELETE FROM sessions WHERE session_id_hash = $1", []any{hashSessionID(cookie.Value)}, nil) {
+			return
+		}
+	}
+	if !createSession(w, r, userID) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{"token": token, "role": role})
+	_ = json.NewEncoder(w).Encode(map[string]string{"role": role})
+}
+
+func get_csrf_token(w http.ResponseWriter, r *http.Request) {
+	principal := r.Context().Value(principalContextKey{}).(authPrincipal)
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"csrf_token": principal.CSRFToken})
+}
+
+func post_logout(w http.ResponseWriter, r *http.Request) {
+	principal := r.Context().Value(principalContextKey{}).(authPrincipal)
+	if !executeQuery(w, r, "delete session", "DELETE FROM sessions WHERE session_id_hash = $1", []any{principal.SessionIDHash}, nil) {
+		return
+	}
+	clearSessionCookie(w, r)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func get_admin_info(w http.ResponseWriter, r *http.Request) {
@@ -1039,11 +1125,13 @@ func apiRoutes() httpserv.Routes {
 	return httpserv.Routes{
 		"POST /auth/register": post_register,
 		"POST /auth/login":    post_login,
-		"GET /users":          authenticate(false, get_users),
-		"GET /users/{id}":     authenticate(false, make_get_user("id")),
-		"POST /users":         authenticate(true, post_user),
-		"PUT /users/{id}":     authenticate(true, make_put_user("id")),
-		"DELETE /users/{id}":  authenticate(true, make_delete_user("id")),
-		"GET /admin/info":     authenticate(true, get_admin_info),
+		"GET /auth/csrf":      authenticate(false, false, get_csrf_token),
+		"POST /auth/logout":   authenticate(false, true, post_logout),
+		"GET /users":          authenticate(false, false, get_users),
+		"GET /users/{id}":     authenticate(false, false, make_get_user("id")),
+		"POST /users":         authenticate(true, true, post_user),
+		"PUT /users/{id}":     authenticate(true, true, make_put_user("id")),
+		"DELETE /users/{id}":  authenticate(true, true, make_delete_user("id")),
+		"GET /admin/info":     authenticate(true, false, get_admin_info),
 	}
 }

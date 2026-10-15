@@ -26,17 +26,28 @@ func TestUsersRoutes(t *testing.T) {
 			t.Fatalf("POST /auth/register status = %d, want %d; body: %s", response.Code, http.StatusCreated, response.Body)
 		}
 		var registered struct {
-			Token string `json:"token"`
-			Role  string `json:"role"`
+			Role string `json:"role"`
 		}
-		if err := json.Unmarshal(response.Body.Bytes(), &registered); err != nil || registered.Role != "user" || registered.Token == "" {
+		if err := json.Unmarshal(response.Body.Bytes(), &registered); err != nil || registered.Role != "user" {
 			t.Fatalf("unexpected registration response: %+v; error: %v", registered, err)
 		}
-		if got := serveRequestWithToken(mux, http.MethodGet, "/users", "", registered.Token).Code; got != http.StatusOK {
+		userCookie := findSessionCookie(t, response)
+		if userCookie.HttpOnly != true || userCookie.Secure || userCookie.SameSite != http.SameSiteLaxMode || userCookie.Path != "/" {
+			t.Fatalf("unexpected HTTP session cookie attributes: %+v", userCookie)
+		}
+		csrfToken := getCSRFToken(t, mux, userCookie)
+		if got := serveRequestWithSession(mux, http.MethodGet, "/users", "", userCookie, "").Code; got != http.StatusOK {
 			t.Fatalf("registered user GET /users status = %d, want %d", got, http.StatusOK)
 		}
-		if got := serveRequestWithToken(mux, http.MethodPost, "/users", `{}`, registered.Token).Code; got != http.StatusForbidden {
+		if got := serveRequestWithSession(mux, http.MethodPost, "/users", `{}`, userCookie, csrfToken).Code; got != http.StatusForbidden {
 			t.Fatalf("registered user POST /users status = %d, want %d", got, http.StatusForbidden)
+		}
+
+		if got := serveRequestWithSession(mux, http.MethodPost, "/users", `{}`, testAdminCookie, "").Code; got != http.StatusForbidden {
+			t.Fatalf("admin POST /users without CSRF token status = %d, want %d", got, http.StatusForbidden)
+		}
+		if got := serveRequestWithSession(mux, http.MethodPost, "/users", `{}`, testAdminCookie, "wrong-token").Code; got != http.StatusForbidden {
+			t.Fatalf("admin POST /users with invalid CSRF token status = %d, want %d", got, http.StatusForbidden)
 		}
 
 		login := fmt.Sprintf(`{"email":%q,"password":"test-password"}`, prefix+"-auth@example.test")
@@ -44,11 +55,10 @@ func TestUsersRoutes(t *testing.T) {
 		if response.Code != http.StatusOK {
 			t.Fatalf("POST /auth/login status = %d, want %d; body: %s", response.Code, http.StatusOK, response.Body)
 		}
-		var loggedIn struct {
-			Token string `json:"token"`
-		}
-		if err := json.Unmarshal(response.Body.Bytes(), &loggedIn); err != nil || loggedIn.Token == "" {
-			t.Fatalf("unexpected login response: %+v; error: %v", loggedIn, err)
+		loginCookie := findSessionCookie(t, response)
+		loginCSRF := getCSRFToken(t, mux, loginCookie)
+		if loginCSRF == csrfToken {
+			t.Fatal("login reused the previous session's CSRF token")
 		}
 		response = serveRawRequest(mux, http.MethodPost, "/auth/login", strings.Replace(login, "test-password", "wrong-password", 1))
 		if response.Code != http.StatusUnauthorized {
@@ -58,6 +68,14 @@ func TestUsersRoutes(t *testing.T) {
 		response = serveRequest(mux, http.MethodGet, "/admin/info", "")
 		if response.Code != http.StatusOK {
 			t.Fatalf("GET /admin/info status = %d, want %d; body: %s", response.Code, http.StatusOK, response.Body)
+		}
+
+		response = serveRequestWithSession(mux, http.MethodPost, "/auth/logout", "", userCookie, csrfToken)
+		if response.Code != http.StatusNoContent {
+			t.Fatalf("POST /auth/logout status = %d, want %d", response.Code, http.StatusNoContent)
+		}
+		if got := serveRequestWithSession(mux, http.MethodGet, "/users", "", userCookie, "").Code; got != http.StatusUnauthorized {
+			t.Fatalf("request after logout status = %d, want %d", got, http.StatusUnauthorized)
 		}
 	})
 
@@ -212,6 +230,23 @@ func setupIntegrationMux(t *testing.T) *http.ServeMux {
 		mux.HandleFunc(pattern, handler)
 	}
 
+	adminEmail := fmt.Sprintf("session-test-admin-%d@example.test", time.Now().UnixNano())
+	registration := fmt.Sprintf(`{"name":"Session Test Admin","age":40,"email":%q,"password":"admin-password"}`, adminEmail)
+	response := serveRawRequest(mux, http.MethodPost, "/auth/register", registration)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create integration admin: status=%d body=%s", response.Code, response.Body)
+	}
+	testAdminCookie = findSessionCookie(t, response)
+	rows, err := db.Query(context.Background(), "UPDATE users SET role = 'admin' WHERE email = $1 RETURNING id", adminEmail)
+	if err != nil {
+		t.Fatalf("promote integration admin: %v", err)
+	}
+	if !rows.Next() {
+		rows.Close()
+		t.Fatal("promote integration admin returned no user")
+	}
+	rows.Close()
+	testAdminCSRFToken = getCSRFToken(t, mux, testAdminCookie)
 	return mux
 }
 
@@ -254,21 +289,21 @@ func createTestUser(t *testing.T, mux *http.ServeMux, user User) int {
 	return id
 }
 
+var testAdminCookie *http.Cookie
+var testAdminCSRFToken string
+
 func serveRequest(mux *http.ServeMux, method, target, body string) *httptest.ResponseRecorder {
-	return serveRequestAs(mux, method, target, body, "admin")
+	return serveRequestWithSession(mux, method, target, body, testAdminCookie, testAdminCSRFToken)
 }
 
-func serveRequestAs(mux *http.ServeMux, method, target, body, role string) *httptest.ResponseRecorder {
-	token, err := issueToken(1, role)
-	if err != nil {
-		panic(err)
-	}
-	return serveRequestWithToken(mux, method, target, body, token)
-}
-
-func serveRequestWithToken(mux *http.ServeMux, method, target, body, token string) *httptest.ResponseRecorder {
+func serveRequestWithSession(mux *http.ServeMux, method, target, body string, cookie *http.Cookie, csrfToken string) *httptest.ResponseRecorder {
 	request := httptest.NewRequest(method, target, strings.NewReader(body))
-	request.Header.Set("Authorization", "Bearer "+token)
+	if cookie != nil {
+		request.AddCookie(cookie)
+	}
+	if csrfToken != "" {
+		request.Header.Set("X-CSRF-Token", csrfToken)
+	}
 	if body != "" {
 		request.Header.Set("Content-Type", "application/json")
 	}
@@ -278,13 +313,36 @@ func serveRequestWithToken(mux *http.ServeMux, method, target, body, token strin
 }
 
 func serveRawRequest(mux *http.ServeMux, method, target, body string) *httptest.ResponseRecorder {
-	request := httptest.NewRequest(method, target, strings.NewReader(body))
-	if body != "" {
-		request.Header.Set("Content-Type", "application/json")
+	return serveRequestWithSession(mux, method, target, body, nil, "")
+}
+
+func findSessionCookie(t *testing.T, response *httptest.ResponseRecorder) *http.Cookie {
+	t.Helper()
+	for _, cookie := range response.Result().Cookies() {
+		if cookie.Name == sessionCookieName {
+			return cookie
+		}
 	}
-	response := httptest.NewRecorder()
-	mux.ServeHTTP(response, request)
-	return response
+	t.Fatalf("response has no %q cookie", sessionCookieName)
+	return nil
+}
+
+func getCSRFToken(t *testing.T, mux *http.ServeMux, cookie *http.Cookie) string {
+	t.Helper()
+	response := serveRequestWithSession(mux, http.MethodGet, "/auth/csrf", "", cookie, "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET /auth/csrf status = %d, want %d; body: %s", response.Code, http.StatusOK, response.Body)
+	}
+	if response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("GET /auth/csrf Cache-Control = %q, want no-store", response.Header().Get("Cache-Control"))
+	}
+	var result struct {
+		Token string `json:"csrf_token"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil || result.Token == "" {
+		t.Fatalf("invalid CSRF-token response: %+v; error: %v", result, err)
+	}
+	return result.Token
 }
 
 func decodeUsers(t *testing.T, response *httptest.ResponseRecorder) map[string]User {

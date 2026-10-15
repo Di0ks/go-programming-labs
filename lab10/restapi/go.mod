@@ -8,7 +8,6 @@ replace github.com/Di0ks/go-programming-labs/lab7/httpserv => ../../lab7/httpser
 
 require (
 	github.com/Di0ks/go-programming-labs/lab7/httpserv v0.0.0-00010101000000-000000000000
-	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/jackc/pgx/v5 v5.11.0
 	golang.org/x/crypto v0.57.0
 )
